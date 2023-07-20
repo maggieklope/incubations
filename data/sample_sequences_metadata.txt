@@ -1,0 +1,16 @@
+data/sample_sequences metadata
+
+irga_template.xslx is a template for taking data. Actual data are contained in csv subfolder. Data contain
+
+  - date : (of sample)
+  - baseline : (minimum height to be considered part of a peak)
+  - plot, treatment, depth - sample ID columns
+  - start_end : either "start" or "end", referring to whether the jar has been closed for a period (end) or was just opened
+  - time : (of irga sample)
+  - height : peak height observed. This is not used for analysis, but may be helpful to align samples to the raw data if there is an issue
+  - std : if 1, then the sample is a standard and will be used to form a standard curve. If blank, the sample will not be included in the standard curve
+  - std_conc : concentration of standard if the sample is from a standard tank (in ppm)
+  - percent sample : the proportion of the injected sample that is actually from the sample (may be <1 in cases where sample is mixed with 400ppm CO2 to bring into an appropriate range for the irga) NOTE: express this as a proportion less than or equal to 1
+  - percent_400 : proportion of injected sample that is from 400ppm CO2 (see above)
+  - cancel : if 1, then sample will be eliminated from analysis. This is for errors and other special cases
+  - note : any notes

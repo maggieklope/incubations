@@ -1,0 +1,167 @@
+---
+title: "IRGA data for NCOS"
+author: "Jacob Weverka"
+date: "7/22/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading necessary libraries
+
+```{r, message=FALSE}
+library(tidyverse)
+library(magrittr)
+library(R.utils)
+library(broom)
+library(here)
+# library(BAS)
+```
+
+
+ <font size="4">  General setup 4</font>
+
+
+Read in licor data with timestamp and date
+
+```{r, message = FALSE}
+# raw data folder
+licor_raw = here::here("data/maggie_licor_raw/")
+
+# list of files in raw data folder
+files = list.files(licor_raw)
+
+
+run_data = tibble(filename = files) %>%
+  mutate(contents = map(filename, ~ read_table2(file.path(licor_raw, .x), skip = 1) %>%
+                          rename(time = `Time(H:M:S)`))) %>%
+  mutate(timestamp_date = map(filename, ~ (str_remove(strsplit(readLines(con = file.path(licor_raw, .x), n = 1), split = " ")[[1]][1], '"'))) %>%
+           lubridate::ymd(),
+         timestamp_time = map(filename, ~ read_table2(file.path(licor_raw, .x), skip = 1)[1,1])) %>%
+  unnest(timestamp_time)
+
+```
+Read in sequence data from lab
+
+```{r, message=FALSE}
+
+# excel files (CSV) with sample info folder
+sequence_files = here::here("data/maggie_sample_sequences/")
+
+seqs = list.files(sequence_files)
+
+date_fun = function(df){df$date[1]}
+
+time_fun = function(df){df$time[1]}
+
+all_seqs = tibble(filename = seqs) %>%
+  mutate(sequences = map(filename, ~ read_csv(file.path(sequence_files, .x)) %>% 
+                           dplyr::filter(height > baseline) %>% 
+                           mutate(peak_number = seq.int(nrow(.)))
+                         )) %>% 
+  mutate(timestamp_date = lubridate::mdy(map(sequences, date_fun)),
+         timestamp_time = map(sequences, time_fun))
+
+```
+
+
+Add time elapsed within nested data
+Filter out non-peak data
+Assign peaks
+
+```{r}
+baseline = 5
+
+run_data = run_data %>%
+  mutate(contents = map(contents,
+                       ~ mutate(.x,
+                                time_elapsed = seq.int(nrow(.)),
+                                is_peak = `CO2(ppm)` > baseline)
+                       )
+         ) %>%
+  unnest(contents) %>%
+  filter(is_peak) %>%
+  nest(-filename, -timestamp_date, -`Time(H:M:S)`) %>%
+    mutate(data = 
+           map(data, ~
+             .x %>% mutate(peak_number = cumsum((time_elapsed - lag(time_elapsed)) > 1 & !is.na(lag(time_elapsed))) + 1
+                      )
+           )
+  )
+
+```
+
+Calculate area under the curve
+
+
+```{r message=FALSE, warning=FALSE}
+calc_area = function(df){ as.double(sum(df$rectangle, na.rm = TRUE) + sum(df$triangle, na.rm = TRUE))}
+
+intp = run_data %>%
+  mutate(data = map(data, ~ .x %>%
+                      nest(-peak_number) %>%
+                      mutate(data = map(data, ~ .x %>%
+                                          add_row %>%
+                                          mutate(
+                                            rectangle = `CO2(ppm)`,
+                                            triangle = abs(diff(c(baseline[1], `CO2(ppm)`[!is.na(`CO2(ppm)`)], baseline[1]))) * 0.5
+                                            )
+                                        )
+                             ) %>%
+                      mutate(area = map(data, calc_area) %>% flatten_dbl()) %>%
+                      filter(area > 15) %>%
+                      mutate(peak_number = seq.int(nrow(.)))
+                    ),
+         timestamp_date = lubridate::ymd(timestamp_date)
+         )
+```
+Join sequence data to licor data
+
+```{r}
+all_data =
+  inner_join(all_seqs, intp, by = "timestamp_date")
+```
+
+
+
+
+Joining data - be aware if you have multiple files for the same date it will produce all possible combos for that row
+
+```{r}
+all_data = as_tibble(intp) %>%
+  inner_join(as_tibble(all_seqs), by = "timestamp_date") %>%
+  mutate(labeled_data = map2(.x = data, .y = sequences, ~ left_join(.x, .y, by = "peak_number")),
+         standards = map(labeled_data, ~ .x %>% drop_na(std)),
+         samples = map(labeled_data, ~ .x %>% filter(is.na(std))))
+```
+
+
+Make standard curve
+
+```{r message = FALSE}
+add_sc = all_data %>% 
+  mutate(fit = map(standards, ~ lm(std_conc ~ 0 + area, data = .)),
+         results = map(fit, tidy),
+         pval = map2(fit, results, ~ glance(.x) %>%
+                      select(r.squared) %>%
+                      bind_cols(.y$p.value)))
+```
+
+
+Calculate ppm values with confidence intervals for samples
+
+```{r}
+finished = add_sc %>%
+  mutate(samples = map2(fit, samples,
+                       ~ .y %>% bind_cols(as.data.frame(predict(.x, .y, interval = "confidence"))))
+  ) %>%
+  arrange(timestamp_date)
+```
+
+
+```{r}
+
+```
+
